@@ -1,0 +1,39 @@
+name: build-stocks
+
+# 全上場銘柄マスター(docs/data/stocks.json)を JPX 公式 data_j.xls から再生成。
+# 上場・廃止は頻繁でないので週1(日本時間 日曜朝)＋手動。
+on:
+  schedule:
+    - cron: "0 22 * * 0"   # UTC日22:00 = JST月07:00
+  workflow_dispatch: {}
+
+concurrency:
+  group: build-stocks
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install --no-cache-dir xlrd
+      - name: Build stocks master
+        run: python scripts/build_stocks.py
+      - name: Commit
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/data/stocks.json
+          if git diff --cached --quiet; then
+            echo "no changes"
+          else
+            git commit -m "data: rebuild stocks master $(date -u +%Y-%m-%d)"
+            git push
+          fi

@@ -8,14 +8,15 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        py = pkgs.python3.withPackages (ps: [ ps.yfinance ps.xlrd ]);
+        py = pkgs.python3.withPackages (ps: [ ps.xlrd ]);
       in {
         devShells.default = pkgs.mkShell {
-          packages = [ py pkgs.git ];
+          packages = [ py pkgs.deno pkgs.git ];
           shellHook = ''
             echo "vwap devShell"
-            echo "  収集:   python scripts/fetch_vwap.py"
-            echo "  配信:   python -m http.server -d docs 8000  → http://localhost:8000"
+            echo "  マスター: python scripts/build_stocks.py"
+            echo "  プロキシ: deno run -A proxy/yahoo.ts   (http://localhost:8000)"
+            echo "  配信:     python -m http.server -d docs 8200  → http://localhost:8200"
           '';
         };
       });

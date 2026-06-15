@@ -1,111 +1,99 @@
-# 日本株 VWAP + 価格別出来高（5分足）
+# 日本株 VWAP + 価格別出来高（5分足・全銘柄オンデマンド）
 
-Yahoo Finance の5分足を **GitHub Actions（15分間隔）** で取得し、VWAP と
-価格別出来高（ボリュームプロファイル）を計算して **リポジトリに JSON 保存**、
-**GitHub Pages** の静的サイト（TradingView lightweight-charts）で表示します。
-任意で **Notion** に当日サマリを併記します。**ランニングコスト 0 円**。
+東証**全上場銘柄（約4,400）**を、4桁/英数字コードまたは銘柄名で検索し、
+**閲覧した銘柄だけ**をその場で Yahoo Finance から取得して、VWAP と
+価格別出来高（ボリュームプロファイル）を**ブラウザ内で計算・描画**します。
+**データは一切保存しません**（＝容量が増え続ける問題が原理的に発生しない）。
+ホスティングは GitHub Pages、取得中継だけ無料サーバーレスを使い、**ランニングコスト 0 円**。
 
 ```
-GitHub Actions (cron 15分) ─ yfinance で 5分足取得
-   ├ VWAP（寄り付きからの累積）を各バーへ付与
-   └ 価格別出来高（当日 / 直近N日合成）と POC・VAH・VAL を計算
-   ▼ docs/data/<銘柄>/<日付>.json を commit（+ 任意で Notion へ upsert）
-GitHub Pages（docs/） ライトクリーンUI・整数表示
-   ├ ローソク足 + VWAP ライン + 出来高（下部）
-   ├ 価格別出来高を価格軸に重ねて左側に水平表示（POC強調・バリューエリア網掛け）
-   ├ 全上場銘柄(約4,400・英数字コード含む)を検索（4桁/英数字コード or 銘柄名の一部一致、
-   │  大小文字無視・前方一致優先）。検索ボックスはフォーカスで現在銘柄を自動クリア。
-   ├ 過去最大60営業日分の5分足を保持し、日付ドロップダウンで任意の日を表示。
-   └ 価格帯別出来高の集計期間を 当日 / 直近5・20・60日 で切替。
-     チャート実体は監視リスト(config)の収集済み銘柄。未収集は案内表示。
+GitHub Pages（docs/・静的）
+   ├ stocks.json … 全上場銘柄マスター（検索用・週1自動再生成）
+   └ 銘柄を選択 → 無料プロキシ経由で Yahoo 5分足(最大60日)を取得
+                → ブラウザで VWAP / 価格別出来高 / 合成プロファイルを計算
+                → lightweight-charts で描画
+無料プロキシ（Val.town / Deno Deploy・0円）
+   └ Yahoo chart API を CORS 付きで中継するだけ（保存なし・60秒キャッシュ）
 ```
 
-検索用の全銘柄マスター（`docs/data/stocks.json`）は JPX 公式の
-「東証上場銘柄一覧(data_j.xls)」から生成します（週1で自動再生成）。
-表示・トグル(VWAP/価格別出来高/出来高)・期間(当日/複数日合成)はすべて
-クライアントサイドで完結します。
+ブラウザから Yahoo を直接叩けない（CORS）ため、**薄い中継プロキシ1つだけ**が必要です。
+データは持たないので、プロキシは「通すだけ」の約60行です。
 
 ## ディレクトリ
 
 ```
-config/tickers.json            監視銘柄(=チャート収集対象)・パラメータ
-scripts/fetch_vwap.py          取得・VWAP・プロファイル計算・保存
-scripts/build_stocks.py        JPX→全銘柄マスター(stocks.json)生成
-.github/workflows/fetch.yml    15分間隔の5分足収集
-.github/workflows/build-stocks.yml  週1の全銘柄マスター再生成
+proxy/yahoo.ts                 Yahoo 中継プロキシ（Val.town/Deno/ローカル共通）
 docs/                          GitHub Pages 公開ルート
   index.html / app.js / style.css
-  data/                        生成データ（Actions が commit）
-    stocks.json                検索用 全上場銘柄マスター
-    <銘柄>/<日付>.json          5分足+VWAP+プロファイル
-flake.nix / .envrc             ローカル開発（nix devShell: yfinance+xlrd）
+  config.json                  ★ proxyBase（プロキシURL）・お気に入り等
+  data/stocks.json             全上場銘柄マスター（検索用）
+scripts/build_stocks.py        JPX→stocks.json 生成
+.github/workflows/build-stocks.yml  週1でマスター再生成
+flake.nix / .envrc             ローカル開発（python3+xlrd, deno）
 ```
 
 ## セットアップ
 
-1. **リポジトリ作成・push**（public 推奨：Actions 実行時間が無制限・0円）
-   ```bash
-   git init && git add -A && git commit -m "init"
-   gh repo create <name> --public --source=. --push
-   ```
-2. **GitHub Pages を有効化**: Settings → Pages → Source =「Deploy from a branch」、
-   Branch = `main` / フォルダ = `/docs`。
-   公開URL: `https://<user>.github.io/<repo>/`
-3. **Actions の書き込み権限**: Settings → Actions → General →
-   Workflow permissions =「Read and write permissions」。
-4. （任意）**Notion 併用**: Settings → Secrets and variables → Actions に
-   `NOTION_TOKEN` と `NOTION_DATABASE_ID` を登録。未設定なら Notion 連携はスキップ。
-5. 初回は Actions タブ →「build-stocks」→ Run workflow で全銘柄マスターを生成し、
-   続けて「fetch-vwap」→ Run workflow で監視リストの5分足を収集して動作確認。
+### 1. 中継プロキシをデプロイ（どちらか・0円）
 
-> cron は UTC 基準で「JST 9:00–15:45 の立会時間に15分間隔」＋「JST 16:00 の日次取得」。
-> 毎回 **過去60営業日分の5分足**を一括取得して日付ごとに分割・**丸ごと上書き**するため、
-> cron が1回飛んでも次回が埋め直し、履歴も自動で積み上がります（Yahoo の5分足は
-> 60日が遡及上限）。`config/tickers.json` の `fetchPeriod`(既定 60d) /
-> `compositeWindows`(既定 [5,20,60]) で調整可。
+**A. Val.town（GUIだけで完結・最短）**
+1. https://val.town でサインイン → New → **HTTP val**。
+2. `proxy/yahoo.ts` の内容を貼り付けて保存。
+3. 発行された URL（例 `https://xxxx.web.val.run`）をコピー。
 
-## 銘柄の追加・変更（チャート収集対象）
+**B. Deno Deploy**
+1. このリポジトリ（または `proxy/yahoo.ts`）を https://dash.deno.com で新規プロジェクトにデプロイ。
+2. エントリポイントを `proxy/yahoo.ts` に指定。発行 URL をコピー。
 
-検索は全上場銘柄が対象ですが、**チャート表示は `config/tickers.json` の監視リスト
-銘柄のみ**です（未収集銘柄を選ぶと追加方法を案内）。表示したい銘柄を
-`{ "symbol": "7203.T", "name": "トヨタ自動車" }` 形式で追加してください
-（コードは `7203.T` 形式）。`compositeDays`（合成日数）, `profileBins`（ビン数≒
-粒度）, `valueAreaPercent` も調整可。銘柄を増やすほど Actions 実行時間と Yahoo
-レート制限の負荷が上がるので、間隔・銘柄数は控えめに。
+### 2. フロントにプロキシURLを設定
 
-## Notion データベースの必要プロパティ
+`docs/config.json` の `proxyBase` にコピーしたURLを設定して commit/push：
 
-`NOTION_DATABASE_ID` の DB に以下のプロパティを用意してください（名称一致が必要）:
+```json
+{ "proxyBase": "https://xxxx.web.val.run", "fetchRange": "60d",
+  "compositeWindows": [5, 20, 60], "favorites": ["7203","6758","9984"] }
+```
 
-| プロパティ | 型 |
-|---|---|
-| 銘柄 | タイトル |
-| 終値 | 数値 |
-| VWAP | 数値 |
-| 乖離率 | 数値 |
-| POC | 数値 |
-| 更新 | 日付 |
+未設定のうちは画面に「プロキシ未設定」と表示されます。設定すれば全銘柄が見られます。
 
-Integration を作成し、対象DBに「接続」しておくこと。プロパティ不一致時は
-連携のみスキップし、データ収集と Pages 表示は継続します。
+### 3. GitHub Pages（既に有効なら不要）
 
-## ローカル開発（nix）
+Settings → Pages → Source =「Deploy from a branch」、Branch=`main`/`/docs`。
+公開URL: `https://<user>.github.io/<repo>/`
+
+### 4. 銘柄マスターの自動更新
+
+`build-stocks` ワークフローが週1（日曜朝）で JPX の最新一覧から `stocks.json` を再生成します。
+初回は Actions → build-stocks → Run workflow で生成可（既に同梱済みなら不要）。
+
+## 機能
+
+- **全上場銘柄**（約4,400・英数字コード 130A 等含む）を、4桁/英数字コード or 銘柄名で
+  部分一致検索（大小文字無視・前方一致優先）。検索ボックスはフォーカスで現在銘柄を自動クリア。
+- 選択銘柄の **最大60営業日**の5分足を取得し、日付ドロップダウンで任意の日を表示。
+- **VWAP**（寄り付きからの累積）ライン、**出来高**ヒストグラム（下部）。
+- **価格別出来高**を価格軸に重ねて左側に表示（POC強調・バリューエリア網掛け）。
+  集計期間を **当日 / 直近5・20・60日** で切替（複数日はブラウザ内で合成）。
+- 各レイヤーは VWAP / 価格別出来高 / 出来高 のトグルで個別オンオフ。
+- ライトクリーンUI・金額は整数表示。
+
+## ローカル開発
 
 ```bash
-nix develop                              # yfinance + xlrd 入り devShell
-python scripts/build_stocks.py           # 全銘柄マスター → docs/data/stocks.json
-python scripts/fetch_vwap.py             # 5分足取得 → docs/data へ出力
-python -m http.server -d docs 8000       # → http://localhost:8000
+nix develop                                   # python3+xlrd, deno 入り
+python scripts/build_stocks.py                # 全銘柄マスター → docs/data/stocks.json
+deno run -A proxy/yahoo.ts                     # プロキシ(http://localhost:8000)
+# docs/config.json の proxyBase を "http://localhost:8000" にして
+python -m http.server -d docs 8000 &           # ※ポートはプロキシと別に
+#   → http://localhost:8000（配信）/ プロキシは8000以外で。例: 配信8200
 ```
 
-## 仕様メモ
+## 仕様・注意
 
 - **VWAP** = Σ(代表値×出来高)/Σ(出来高)、代表値=(高+安+終)/3、寄り付きから累積（日次リセット）。
-- **価格別出来高**: 5分足からは正確な約定価格が不明なため、各バーの出来高を
-  `[安値, 高値]` に均等配分してビンへ積む OHLC ベースの近似。
-  **POC** = 最大出来高価格、**バリューエリア(VAH/VAL)** = POC から拡張して
-  総出来高の約70%が収まる価格帯。
-- **データソースの注意**: Yahoo は IP 単位のレート制限があり、稀に取得失敗
-  （429）が起こります。失敗時は既存データを保持して次回に再取得します。
-  多数の銘柄を短間隔で取得すると弾かれやすいので、銘柄数や間隔は控えめに。
-```
+- **価格別出来高**: 5分足からは正確な約定価格が不明なため、各バーの出来高を `[安値,高値]` へ
+  均等配分してビンに積む OHLC ベースの近似。POC=最大出来高価格、VAH/VAL=総出来高の約70%が
+  収まる価格帯。
+- **データソース**: Yahoo は 5分足の遡及上限が約60日、かつIP単位のレート制限あり。プロキシは
+  60秒の短期キャッシュ＋同意Cookieで緩和。万一プロキシのIPが弾かれる場合は別プロバイダへ。
+- **コスト**: GitHub（Pages/Actions）も Val.town/Deno Deploy 無料枠も 0 円。データ保存なし。

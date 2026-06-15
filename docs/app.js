@@ -29,7 +29,8 @@ let master = [];                 // [{code,name,seg,nname}]
 let haveCodes = new Set();       // データ取得済みコード
 let tickerByCode = new Map();    // code -> index.json の ticker
 let curCode = null, curName = "";
-let period = "day";
+let period = "day";              // "day" | "c<N>"
+let windows = [];                // 集計期間(例 [5,20,60])
 
 // --------------------------------------------------------------- chart init
 function initChart() {
@@ -132,12 +133,15 @@ async function boot() {
     fetch(`${DATA}/index.json`, { cache: "no-store" }).then((r) => r.json()).catch(() => ({ tickers: [], updated: "" })),
     fetch(`${DATA}/stocks.json`, { cache: "no-store" }).then((r) => r.json()),
   ]);
-  master = stk.stocks.map(([code, name, seg]) => ({ code, name, seg, nname: norm(name) }));
+  master = stk.stocks.map(([code, name, seg]) =>
+    ({ code, name, seg, nname: norm(name), ncode: code.toLowerCase() }));
   for (const t of idx.tickers) {
     const code = t.symbol.replace(/\.T$/, "");
     haveCodes.add(code);
     tickerByCode.set(code, t);
   }
+  windows = idx.composites || [];
+  buildPeriodControl();
   $("updated").textContent =
     `データ更新: ${idx.updated || "-"} ／ 検索対象 ${master.length.toLocaleString()} 銘柄（東証全上場）／ 収集済み ${haveCodes.size} 銘柄`;
 
@@ -150,16 +154,11 @@ async function boot() {
 // --------------------------------------------------------------- search
 function searchHits(query) {
   const q = norm(query);
-  const digit = /^[0-9]+$/.test(q);
-  let list;
-  if (!q) {
-    list = master.filter((m) => haveCodes.has(m.code)); // 空 → 収集済み一覧
-  } else if (digit) {
-    list = master.filter((m) => m.code.includes(q));
-  } else {
-    list = master.filter((m) => m.nname.includes(q) || m.code.includes(q));
-  }
-  const pref = (m) => (digit ? m.code.startsWith(q) : m.nname.startsWith(q)) ? 0 : 1;
+  // 空 → 収集済み一覧。それ以外はコード/名称の部分一致(大小文字無視)。
+  const list = !q
+    ? master.filter((m) => haveCodes.has(m.code))
+    : master.filter((m) => m.ncode.includes(q) || m.nname.includes(q));
+  const pref = (m) => (m.ncode.startsWith(q) || m.nname.startsWith(q)) ? 0 : 1;
   // 収集済み優先 → 前方一致優先 → コード昇順
   list.sort((a, b) =>
     (haveCodes.has(b.code) - haveCodes.has(a.code)) ||
@@ -232,9 +231,14 @@ async function render() {
   chart.timeScale().fitContent();
 
   let prof = day.profile;
-  if (period === "composite" && tickerByCode.get(curCode).hasComposite) {
-    try { prof = (await fetch(`${DATA}/${symbol}/composite.json`, { cache: "no-store" }).then((r) => r.json())).profile; }
-    catch { /* フォールバック: 当日 */ }
+  let profLabel = "当日";
+  const t = tickerByCode.get(curCode);
+  const w = period.startsWith("c") ? Number(period.slice(1)) : 0;
+  if (w && (t.composites || []).includes(w)) {
+    try {
+      const comp = await fetch(`${DATA}/${symbol}/composite_${w}.json`, { cache: "no-store" }).then((r) => r.json());
+      prof = comp.profile; profLabel = `直近${w}日`;
+    } catch { /* フォールバック: 当日 */ }
   }
   currentProfile = prof;
   applyVisibility();
@@ -247,11 +251,18 @@ async function render() {
   const sign = (x) => (x >= 0 ? "+" : "");
   $("meta").innerHTML = `
     <div class="stat"><span class="k">銘柄</span><span class="name"><span class="c">${curCode}</span>${curName}</span></div>
-    <div class="stat"><span class="k">終値</span><span class="v ${cls(chg)}">${fmtInt(last.c)} <span style="font-size:13px">${sign(chg)}${fmtInt(chg)}</span></span></div>
+    <div class="stat"><span class="k">終値（${date}）</span><span class="v ${cls(chg)}">${fmtInt(last.c)} <span style="font-size:13px">${sign(chg)}${fmtInt(chg)}</span></span></div>
     <div class="stat"><span class="k">VWAP</span><span class="v vwap sub">${fmtInt(last.vwap)}</span></div>
     <div class="stat"><span class="k">VWAP乖離</span><span class="v sub ${cls(dev)}">${sign(dev)}${dev.toFixed(1)}%</span></div>
-    <div class="stat"><span class="k">POC</span><span class="v poc sub">${fmtInt(prof.poc)}</span></div>
+    <div class="stat"><span class="k">POC（${profLabel}）</span><span class="v poc sub">${fmtInt(prof.poc)}</span></div>
     <div class="stat"><span class="k">バリューエリア</span><span class="v sub">${fmtInt(prof.val)} 〜 ${fmtInt(prof.vah)}</span></div>`;
+}
+
+function buildPeriodControl() {
+  const opts = [{ v: "day", label: "当日" }].concat(
+    windows.map((w) => ({ v: `c${w}`, label: `直近${w}日` })));
+  $("period").innerHTML = opts.map((o) =>
+    `<button class="seg-btn${o.v === period ? " on" : ""}" data-v="${o.v}">${o.label}</button>`).join("");
 }
 
 function showEmpty() {
@@ -269,7 +280,13 @@ function showEmpty() {
 
 // --------------------------------------------------------------- events
 const q = $("q");
-q.addEventListener("focus", openSuggest);
+const selLabel = () => {
+  const m = master.find((x) => x.code === curCode);
+  return m ? `${curCode}  ${m.name}` : (curCode || "");
+};
+// フォーカス時は現在の銘柄表示を消してすぐ検索できる状態に
+q.addEventListener("focus", () => { q.value = ""; openSuggest(); });
+q.addEventListener("blur", () => setTimeout(() => { closeSuggest(); q.value = selLabel(); }, 120));
 q.addEventListener("input", () => renderSuggest(q.value));
 q.addEventListener("keydown", (e) => {
   if (e.key === "ArrowDown") { e.preventDefault(); moveActive(1); }
@@ -284,13 +301,13 @@ $("suggest").addEventListener("mousedown", (e) => {
 document.addEventListener("click", (e) => { if (!$("search").contains(e.target)) closeSuggest(); });
 
 $("date").addEventListener("change", render);
-for (const b of document.querySelectorAll("#period .seg-btn")) {
-  b.addEventListener("click", () => {
-    period = b.dataset.v;
-    document.querySelectorAll("#period .seg-btn").forEach((x) => x.classList.toggle("on", x === b));
-    render();
-  });
-}
+$("period").addEventListener("click", (e) => {
+  const b = e.target.closest(".seg-btn");
+  if (!b) return;
+  period = b.dataset.v;
+  $("period").querySelectorAll(".seg-btn").forEach((x) => x.classList.toggle("on", x === b));
+  render();
+});
 for (const btn of document.querySelectorAll(".toggle")) {
   btn.addEventListener("click", () => {
     const k = btn.dataset.key;

@@ -10,9 +10,13 @@ docs/data/stocks.json を生成する。
 
 import json
 import os
+import re
 import urllib.request
 
 import xlrd
+
+# 東証コード: 4桁数字、または新形式の英数字4文字(例 130A)。指数等の特殊行を除外。
+CODE_RE = re.compile(r"[0-9][0-9A-Z]{3}")
 
 JPX_URL = (
     "https://www.jpx.co.jp/markets/statistics-equities/misc/"
@@ -58,8 +62,8 @@ def main():
         code = str(row[ci].value).strip()
         if code.endswith(".0"):
             code = code[:-2]
-        # 4桁の数字コードのみ(指数・特殊行を除外)
-        if not (code.isdigit() and len(code) == 4):
+        # 4桁数字 or 英数字4文字(新形式)のみ。指数・特殊行を除外。
+        if not CODE_RE.fullmatch(code):
             continue
         name = str(row[ni].value).strip()
         seg = str(row[si].value).strip() if si >= 0 else ""

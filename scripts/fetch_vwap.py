@@ -29,13 +29,14 @@ DATA_DIR = os.path.join(ROOT, "docs", "data")
 # --------------------------------------------------------------------------
 # 取得 (yfinance)
 # --------------------------------------------------------------------------
-def fetch_bars(symbol, retries=3):
-    """5分足を [{ts,o,h,l,c,v}] で返す(欠損・出来高0は除外)。"""
+def fetch_bars(symbol, period="60d", retries=3):
+    """5分足を [{ts,o,h,l,c,v}] で返す(欠損・出来高0は除外)。
+    period は Yahoo の 5分足上限(=60日)まで遡って一括取得する。"""
     last_err = None
     for attempt in range(retries):
         try:
             df = yf.Ticker(symbol).history(
-                period="1d", interval="5m", auto_adjust=False
+                period=period, interval="5m", auto_adjust=False
             )
             if df is None or df.empty:
                 raise RuntimeError("empty response")
@@ -150,12 +151,14 @@ def write_json(path, obj):
 
 
 def list_day_files(symbol_dir):
+    """その銘柄の保存済み日付(YYYY-MM-DD)を昇順で返す。composite_*.json は除外。"""
     if not os.path.isdir(symbol_dir):
         return []
-    return sorted(
-        n[:-5] for n in os.listdir(symbol_dir)
-        if n.endswith(".json") and n != "composite.json"
-    )
+    out = []
+    for n in os.listdir(symbol_dir):
+        if n.endswith(".json") and not n.startswith("composite"):
+            out.append(n[:-5])
+    return sorted(out)
 
 
 def build_composite(symbol_dir, days, nbins, va_pct):
@@ -229,16 +232,34 @@ def notion_upsert(name, symbol, date, close, vwap, poc):
         print(f"  [notion] skip ({symbol}): {e}", file=sys.stderr)
 
 
+def group_by_day(bars):
+    """5分足を JST 日付ごとに分割。{date: [bars...]} を昇順で返す。"""
+    groups = {}
+    for b in bars:
+        d = datetime.fromtimestamp(b["ts"], JST).date().isoformat()
+        groups.setdefault(d, []).append(b)
+    return dict(sorted(groups.items()))
+
+
+def ticker_entry(symbol, name, symbol_dir, windows):
+    days = list_day_files(symbol_dir)
+    comps = [w for w in windows
+             if os.path.exists(os.path.join(symbol_dir, f"composite_{w}.json"))]
+    return {"symbol": symbol, "name": name, "days": days, "composites": comps}
+
+
 # --------------------------------------------------------------------------
 def main():
     with open(CONFIG, encoding="utf-8") as f:
         cfg = json.load(f)
     nbins = cfg.get("profileBins", 50)
     va_pct = cfg.get("valueAreaPercent", 0.70)
-    comp_days = cfg.get("compositeDays", 20)
+    windows = cfg.get("compositeWindows", [20, 60])
+    period = cfg.get("fetchPeriod", "60d")
     tickers = cfg["tickers"]
 
-    index = {"updated": datetime.now(JST).isoformat(), "tickers": []}
+    index = {"updated": datetime.now(JST).isoformat(),
+             "composites": windows, "tickers": []}
 
     for i, t in enumerate(tickers):
         symbol, name = t["symbol"], t["name"]
@@ -246,53 +267,48 @@ def main():
         if i:
             time.sleep(1.5)  # レート制限緩和のため間隔を空ける
         try:
-            bars = fetch_bars(symbol)
+            bars = fetch_bars(symbol, period=period)
             if not bars:
                 print(f"  {symbol}: no bars (休場日?) — 既存データ保持", file=sys.stderr)
-                index["tickers"].append({
-                    "symbol": symbol, "name": name,
-                    "days": list_day_files(symbol_dir),
-                    "hasComposite": os.path.exists(os.path.join(symbol_dir, "composite.json")),
-                })
+                index["tickers"].append(ticker_entry(symbol, name, symbol_dir, windows))
                 continue
 
-            add_vwap(bars)
-            date = day_of(bars)
-            prof = volume_profile(bars, nbins=nbins, va_pct=va_pct)
-            write_json(
-                os.path.join(symbol_dir, f"{date}.json"),
-                {"symbol": symbol, "name": name, "date": date,
-                 "bars": bars, "profile": prof},
-            )
-
-            comp_prof, comp_dates = build_composite(symbol_dir, comp_days, nbins, va_pct)
-            if comp_prof:
+            # 60日分を JST 日付ごとに分割し、各日で VWAP(日次リセット)+プロファイルを保存
+            by_day = group_by_day(bars)
+            for date, day_bars in by_day.items():
+                add_vwap(day_bars)
+                prof = volume_profile(day_bars, nbins=nbins, va_pct=va_pct)
                 write_json(
-                    os.path.join(symbol_dir, "composite.json"),
-                    {"symbol": symbol, "name": name, "days": comp_dates,
-                     "from": comp_dates[0], "to": comp_dates[-1], "profile": comp_prof},
+                    os.path.join(symbol_dir, f"{date}.json"),
+                    {"symbol": symbol, "name": name, "date": date,
+                     "bars": day_bars, "profile": prof},
                 )
 
-            index["tickers"].append({
-                "symbol": symbol, "name": name,
-                "days": list_day_files(symbol_dir), "hasComposite": True,
-            })
+            # 集計期間ごとの合成プロファイル(直近N営業日)
+            for w in windows:
+                comp_prof, comp_dates = build_composite(symbol_dir, w, nbins, va_pct)
+                if comp_prof:
+                    write_json(
+                        os.path.join(symbol_dir, f"composite_{w}.json"),
+                        {"symbol": symbol, "name": name, "window": w, "days": comp_dates,
+                         "from": comp_dates[0], "to": comp_dates[-1], "profile": comp_prof},
+                    )
 
-            last = bars[-1]
-            notion_upsert(name, symbol, date, last["c"], last["vwap"], prof["poc"])
-            print(f"  {symbol}: {len(bars)} bars, VWAP={last['vwap']}, POC={prof['poc']}")
+            index["tickers"].append(ticker_entry(symbol, name, symbol_dir, windows))
+
+            last_date = max(by_day)
+            last = by_day[last_date][-1]
+            last_prof = volume_profile(by_day[last_date], nbins=nbins, va_pct=va_pct)
+            notion_upsert(name, symbol, last_date, last["c"], last["vwap"], last_prof["poc"])
+            print(f"  {symbol}: {len(by_day)}日 / {len(bars)}本, "
+                  f"最新{last_date} VWAP={last['vwap']} POC={last_prof['poc']}")
         except Exception as e:  # noqa: BLE001
             print(f"  {symbol}: ERROR {e}", file=sys.stderr)
-            # 失敗しても既存データは index に残す
-            days = list_day_files(symbol_dir)
-            if days:
-                index["tickers"].append({
-                    "symbol": symbol, "name": name, "days": days,
-                    "hasComposite": os.path.exists(os.path.join(symbol_dir, "composite.json")),
-                })
+            if list_day_files(symbol_dir):  # 失敗時も既存データは index に残す
+                index["tickers"].append(ticker_entry(symbol, name, symbol_dir, windows))
 
     write_json(os.path.join(DATA_DIR, "index.json"), index)
-    print(f"index.json updated: {len(index['tickers'])} tickers")
+    print(f"index.json updated: {len(index['tickers'])} tickers, windows={windows}")
 
 
 if __name__ == "__main__":

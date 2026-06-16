@@ -26,7 +26,15 @@ let master = [];                 // [{code,name,seg,nname,ncode}]
 let codeToName = new Map();
 let curCode = null, curName = "";
 let period = "day";              // "day" | "c<N>"
-let dataset = null;              // { code, dates:[...], byDay:Map(date->bars) }
+let dataset = null;              // 5分足: { code, dates:[...], byDay:Map(date->bars) }
+
+let view = "intra";              // "intra" | "daily" | "margin"
+let dailyData = null;            // 日足: { code, bars, splits }
+let marginData = null;           // 信用: { code, weeks:[...] }
+let drange = "3y";               // 日足の表示期間
+let dchart, dCandle, dVol;       // 日足チャート(遅延生成)
+let mchart, mBuy, mSell;         // 信用残高チャート(遅延生成)
+const apiBase = () => cfg.apiBase || "";
 
 // ===================================================================== 計算
 function addVwap(bars) {
@@ -121,7 +129,7 @@ function drawLoop() { drawProfile(); requestAnimationFrame(drawLoop); }
 function drawProfile() {
   const c = $("overlay"), ctx = c.getContext("2d"), w = c.clientWidth, h = c.clientHeight;
   ctx.clearRect(0, 0, w, h);
-  if (!currentProfile || !candleSeries || !show.profile) return;
+  if (view !== "intra" || !currentProfile || !candleSeries || !show.profile) return;
   const prof = currentProfile;
   const maxLen = (w - chart.priceScale("right").width()) * 0.30;
   const maxVol = Math.max(...prof.bins.map((b) => b.volume)) || 1;
@@ -211,7 +219,14 @@ function commitActive() {
 function selectCode(code) {
   curCode = code; curName = codeToName.get(code) || code;
   $("q").value = `${code}  ${curName}`;
-  loadSymbol(code);
+  dataset = dailyData = marginData = null;   // 銘柄が変わったら全ビューのキャッシュを破棄
+  loadActiveView();
+}
+
+function loadActiveView() {
+  if (view === "intra") loadSymbol(curCode);
+  else if (view === "daily") loadDaily(curCode);
+  else loadMargin(curCode);
 }
 
 function statusEmpty(big, sub) {
@@ -293,6 +308,122 @@ function buildPeriodControl() {
     `<button class="seg-btn${o.v === period ? " on" : ""}" data-v="${o.v}">${o.label}</button>`).join("");
 }
 
+// ===================================================================== view切替・メッセージ
+function showMessage(big, sub) {
+  $("empty").hidden = false;
+  $("empty").innerHTML = `<div class="big">${big}</div>${sub ? `<div class="sub">${sub}</div>` : ""}`;
+}
+function hideMessage() { $("empty").hidden = true; }
+
+function setView(v) {
+  view = v;
+  document.querySelectorAll("#tabs .tab").forEach((t) => t.classList.toggle("on", t.dataset.view === v));
+  document.querySelectorAll(".view").forEach((el) => (el.hidden = el.dataset.view !== v));
+  $("overlay").hidden = v !== "intra";
+  document.querySelectorAll(".ctl").forEach((c) => (c.hidden = c.dataset.for !== v));
+  hideMessage();
+  loadActiveView();
+}
+
+// ===================================================================== 日足ビュー
+function initDailyChart() {
+  if (dchart) return;
+  dchart = LightweightCharts.createChart($("chartDaily"), {
+    autoSize: true,
+    layout: { background: { color: "#fff" }, textColor: "#475569", fontSize: 12, attributionLogo: false },
+    grid: { vertLines: { color: "#eef2f7" }, horzLines: { color: "#eef2f7" } },
+    rightPriceScale: { borderColor: "#e2e8f0" }, timeScale: { borderColor: "#e2e8f0" },
+    localization: { priceFormatter: (p) => fmtInt(p) },
+  });
+  dCandle = dchart.addCandlestickSeries({ upColor: "#089981", downColor: "#f23645", wickUpColor: "#089981", wickDownColor: "#f23645", borderVisible: false, priceFormat: { type: "price", precision: 0, minMove: 1 } });
+  dVol = dchart.addHistogramSeries({ priceFormat: { type: "volume" }, priceScaleId: "vol", lastValueVisible: false });
+  dchart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
+  buildDrange();
+}
+function buildDrange() {
+  const opts = [["1y", "1年"], ["3y", "3年"], ["5y", "5年"], ["all", "全期間"]];
+  $("drange").innerHTML = opts.map(([v, l]) => `<button class="seg-btn${v === drange ? " on" : ""}" data-v="${v}">${l}</button>`).join("");
+}
+async function loadDaily(code) {
+  initDailyChart();
+  if (dailyData && dailyData.code === code) return renderDaily();
+  showMessage("読み込み中…", `${code} の日足を取得しています`);
+  let j;
+  try { j = await fetch(`${apiBase()}/api/daily?code=${code}`, { cache: "no-store" }).then((r) => r.json()); }
+  catch (e) { return showMessage("取得に失敗しました", String(e)); }
+  if (code !== curCode) return;
+  if (!j.bars || !j.bars.length) { dailyData = null; return showMessage("日足は未取得です", "バックフィル待ちです（デプロイ後にCron/管理APIで蓄積されます）。"); }
+  dailyData = { code, bars: j.bars, splits: j.splits || [] };
+  hideMessage(); renderDaily();
+}
+function renderDaily() {
+  if (!dailyData) return;
+  const bars = dailyData.bars;
+  const yrs = { "1y": 1, "3y": 3, "5y": 5 }[drange];
+  let shown = bars;
+  if (yrs) { const d = new Date(); d.setFullYear(d.getFullYear() - yrs); const from = d.toISOString().slice(0, 10); shown = bars.filter((b) => b.date >= from); }
+  if (!shown.length) shown = bars;
+  // 調整後OHLC（分割・併合で連続化）: factor = adj/c
+  dCandle.setData(shown.map((b) => { const f = b.c ? b.adj / b.c : 1; return { time: b.date, open: +(b.o * f).toFixed(2), high: +(b.h * f).toFixed(2), low: +(b.l * f).toFixed(2), close: +b.adj.toFixed(2) }; }));
+  dVol.setData(shown.map((b) => ({ time: b.date, value: b.v, color: b.c >= b.o ? "rgba(8,153,129,0.45)" : "rgba(242,54,69,0.45)" })));
+  dchart.timeScale().fitContent();
+  const last = bars[bars.length - 1];
+  const prev = bars[bars.length - 2] || last;
+  const chg = last.c - prev.c;
+  const cls = (x) => (x >= 0 ? "up" : "down"), sign = (x) => (x >= 0 ? "+" : "");
+  const hi = Math.max(...shown.map((b) => b.h)), lo = Math.min(...shown.map((b) => b.l));
+  $("meta").innerHTML = `
+    <div class="stat"><span class="k">銘柄</span><span class="name"><span class="c">${curCode}</span>${curName}</span></div>
+    <div class="stat"><span class="k">終値（${last.date}）</span><span class="v ${cls(chg)}">${fmtInt(last.c)} <span style="font-size:13px">${sign(chg)}${fmtInt(chg)}</span></span></div>
+    <div class="stat"><span class="k">出来高</span><span class="v sub">${fmtInt(last.v)}</span></div>
+    <div class="stat"><span class="k">期間高値</span><span class="v sub">${fmtInt(hi)}</span></div>
+    <div class="stat"><span class="k">期間安値</span><span class="v sub">${fmtInt(lo)}</span></div>
+    <div class="stat"><span class="k">日足</span><span class="v sub">${bars.length}本（${bars[0].date}〜）</span></div>
+    <div class="stat"><span class="k">分割/併合</span><span class="v sub">${dailyData.splits.length}件</span></div>`;
+}
+
+// ===================================================================== 信用残高ビュー
+function initMarginChart() {
+  if (mchart) return;
+  mchart = LightweightCharts.createChart($("chartMargin"), {
+    autoSize: true,
+    layout: { background: { color: "#fff" }, textColor: "#475569", fontSize: 12, attributionLogo: false },
+    grid: { vertLines: { color: "#eef2f7" }, horzLines: { color: "#eef2f7" } },
+    rightPriceScale: { borderColor: "#e2e8f0" }, timeScale: { borderColor: "#e2e8f0" },
+    localization: { priceFormatter: (p) => fmtInt(p) },
+  });
+  mBuy = mchart.addAreaSeries({ lineColor: "#2563eb", topColor: "rgba(37,99,235,0.25)", bottomColor: "rgba(37,99,235,0.02)", lineWidth: 2, title: "買残" });
+  mSell = mchart.addAreaSeries({ lineColor: "#f23645", topColor: "rgba(242,54,69,0.20)", bottomColor: "rgba(242,54,69,0.02)", lineWidth: 2, title: "売残" });
+}
+async function loadMargin(code) {
+  initMarginChart();
+  if (marginData && marginData.code === code) return renderMargin();
+  showMessage("読み込み中…", `${code} の信用残高を取得しています`);
+  let j;
+  try { j = await fetch(`${apiBase()}/api/margin?code=${code}`, { cache: "no-store" }).then((r) => r.json()); }
+  catch (e) { return showMessage("取得に失敗しました", String(e)); }
+  if (code !== curCode) return;
+  if (!j.weeks || !j.weeks.length) { marginData = null; return showMessage("信用残高は未取得です", "週次（火曜）にJPXから自動取込されます。"); }
+  marginData = { code, weeks: j.weeks };
+  hideMessage(); renderMargin();
+}
+function renderMargin() {
+  if (!marginData) return;
+  const w = marginData.weeks;
+  mBuy.setData(w.map((x) => ({ time: x.week, value: x.buy })));
+  mSell.setData(w.map((x) => ({ time: x.week, value: x.sell })));
+  mchart.timeScale().fitContent();
+  const last = w[w.length - 1];
+  const ratio = last.sell ? (last.buy / last.sell).toFixed(2) : "—";
+  const sign = (x) => (x >= 0 ? "+" : "");
+  $("meta").innerHTML = `
+    <div class="stat"><span class="k">銘柄</span><span class="name"><span class="c">${curCode}</span>${curName}</span></div>
+    <div class="stat"><span class="k">買残（${last.week}）</span><span class="v vwap sub">${fmtInt(last.buy)} <span style="font-size:13px">${sign(last.buy_chg)}${fmtInt(last.buy_chg)}</span></span></div>
+    <div class="stat"><span class="k">売残</span><span class="v down sub">${fmtInt(last.sell)} <span style="font-size:13px">${sign(last.sell_chg)}${fmtInt(last.sell_chg)}</span></span></div>
+    <div class="stat"><span class="k">信用倍率</span><span class="v sub">${ratio}</span></div>
+    <div class="stat"><span class="k">記録週数</span><span class="v sub">${w.length}</span></div>`;
+}
+
 // ===================================================================== events
 const q = $("q");
 const selLabel = () => (curCode ? `${curCode}  ${codeToName.get(curCode) || ""}` : "");
@@ -316,6 +447,15 @@ $("period").addEventListener("click", (e) => {
   period = b.dataset.v;
   $("period").querySelectorAll(".seg-btn").forEach((x) => x.classList.toggle("on", x === b));
   render();
+});
+$("tabs").addEventListener("click", (e) => {
+  const t = e.target.closest(".tab"); if (t) setView(t.dataset.view);
+});
+$("drange").addEventListener("click", (e) => {
+  const b = e.target.closest(".seg-btn"); if (!b) return;
+  drange = b.dataset.v;
+  $("drange").querySelectorAll(".seg-btn").forEach((x) => x.classList.toggle("on", x === b));
+  renderDaily();
 });
 for (const btn of document.querySelectorAll(".toggle")) {
   btn.addEventListener("click", () => {

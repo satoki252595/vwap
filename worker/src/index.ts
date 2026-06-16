@@ -116,6 +116,14 @@ export default {
         if (p === "/api/admin/ingest-margin") return json(await ingestMargin(env));
         if (p === "/api/admin/backfill-daily")
           return json(await ingestDailyChunk(env, parseInt(url.searchParams.get("n") || env.DAILY_BATCH, 10)));
+        if (p === "/api/admin/backfill-one") {
+          const code = (url.searchParams.get("code") || "").trim();
+          const { bars, splits } = await fetchDaily(`${code}.T`, "10y");
+          if (!bars.length) return json({ code, written: 0 });
+          await env.BUCKET.put(`daily/${code}.json`,
+            JSON.stringify({ code, updated: new Date().toISOString(), bars, splits }));
+          return json({ code, bars: bars.length, from: bars[0].date, to: bars[bars.length - 1].date });
+        }
       } catch (e) { return json({ error: String(e) }, 500); }
       return json({ error: "unknown admin route" }, 404);
     }

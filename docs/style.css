@@ -51,6 +51,18 @@ header {
 .brand { font-size: 17px; font-weight: 700; letter-spacing: .2px; white-space: nowrap; }
 .brand span { color: var(--muted); margin: 0 6px; font-weight: 400; }
 
+/* ---------- view tabs ---------- */
+.tabs { display: inline-flex; gap: 2px; background: var(--bg-soft); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 3px; }
+.tab {
+  border: 0; background: transparent; color: var(--fg-2);
+  font-size: 13px; font-weight: 600; padding: 7px 13px; border-radius: var(--radius-xs); cursor: pointer;
+  transition: color .15s, background .15s, box-shadow .15s;
+}
+.tab:hover:not(.on) { color: var(--fg); }
+.tab.on { background: #fff; color: var(--accent); box-shadow: var(--pill-shadow); }
+.ctl { display: inline-flex; align-items: center; gap: 14px; }
+.ctl[hidden] { display: none; }
+
 /* ---------- search ---------- */
 .search { position: relative; flex: 1 1 360px; max-width: 460px; min-width: 240px; }
 .search-ic {
@@ -166,8 +178,11 @@ header {
 
 /* ---------- chart ---------- */
 #chartWrap { position: relative; flex: 1 1 auto; min-height: 360px; width: 100%; }
+.view { position: absolute; inset: 0; z-index: 1; }
+.view[hidden] { display: none; }
 #chart { position: absolute; inset: 0; z-index: 1; }
 #overlay { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+#overlay[hidden] { display: none; }
 .empty {
   position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: 8px; text-align: center;

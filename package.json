@@ -1,0 +1,15 @@
+{
+  "name": "vwap",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "unpdf": "^0.12.1"
+  },
+  "devDependencies": {
+    "wrangler": "^4.20.0"
+  }
+}

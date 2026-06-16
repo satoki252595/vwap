@@ -1,0 +1,23 @@
+name = "vwap"
+main = "worker/src/index.ts"
+compatibility_date = "2025-06-01"
+compatibility_flags = ["nodejs_compat"]
+
+# 静的フロント（docs/）を同居配信。/api/* 以外は assets が処理。
+[assets]
+directory = "docs"
+binding = "ASSETS"
+
+# R2（オブジェクトストレージ）。銘柄ごとに1ファイルなので書込が少なく無料枠で完結。
+# `wrangler r2 bucket create vwap-data` で作成。
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "vwap-data"
+
+# 日次=日足更新（JST15:30=UTC06:30 平日）、週次=信用残高取込（火曜 JST17:00=UTC08:00）
+[triggers]
+crons = ["30 6 * * 1-5", "0 8 * * 2"]
+
+[vars]
+DAILY_BATCH = "30"          # 日足の1ティック処理銘柄数（subrequest上限内）
+ADMIN_TOKEN = "change-me"    # 手動バックフィル用トークン（デプロイ時に変更）

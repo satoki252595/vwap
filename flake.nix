@@ -11,12 +11,13 @@
         py = pkgs.python3.withPackages (ps: [ ps.xlrd ]);
       in {
         devShells.default = pkgs.mkShell {
-          packages = [ py pkgs.deno pkgs.git ];
+          packages = [ py pkgs.nodejs pkgs.git ];
           shellHook = ''
-            echo "vwap devShell"
+            echo "vwap devShell (Cloudflare Worker + R2)"
+            echo "  依存:     npm install            (unpdf + wrangler)"
             echo "  マスター: python scripts/build_stocks.py"
-            echo "  プロキシ: deno run -A proxy/yahoo.ts   (http://localhost:8000)"
-            echo "  配信:     python -m http.server -d docs 8200  → http://localhost:8200"
+            echo "  開発:     npx wrangler dev       → http://localhost:8787"
+            echo "  デプロイ: npx wrangler deploy"
           '';
         };
       });

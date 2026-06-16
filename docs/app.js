@@ -164,8 +164,7 @@ async function boot() {
   for (const m of master) codeToName.set(m.code, m.name);
   buildPeriodControl();
   $("updated").textContent =
-    `全 ${master.length.toLocaleString()} 銘柄（東証全上場）オンデマンド表示 ／ Yahoo Finance 5分足` +
-    (cfg.proxyBase ? "" : " ／ ⚠ config.json の proxyBase 未設定");
+    `全 ${master.length.toLocaleString()} 銘柄（東証全上場） ／ 5分足オンデマンド + 日足/信用残高は蓄積（Yahoo Finance / JPX）`;
   const first = (cfg.favorites || []).find((c) => codeToName.has(c)) || (master[0] && master[0].code);
   if (first) selectCode(first);
   renderSuggest("");
@@ -226,12 +225,9 @@ function statusEmpty(big, sub) {
 
 async function loadSymbol(code) {
   dataset = null;
-  if (!cfg.proxyBase) {
-    return statusEmpty("プロキシ未設定です",
-      "<code>docs/config.json</code> の <code>proxyBase</code> にデプロイした無料プロキシのURLを設定してください（README参照）。");
-  }
   statusEmpty("読み込み中…", `${code} のデータを取得しています`);
-  const url = `${cfg.proxyBase}${cfg.proxyBase.includes("?") ? "&" : "?"}symbol=${encodeURIComponent(code + ".T")}&range=${cfg.fetchRange || "60d"}&interval=5m`;
+  const api = cfg.apiBase || "";   // 同一オリジン(Worker)なら空
+  const url = `${api}/api/chart?symbol=${encodeURIComponent(code + ".T")}&range=${cfg.fetchRange || "60d"}&interval=5m`;
   let bars;
   try {
     bars = parseYahoo(await fetch(url, { cache: "no-store" }).then((r) => r.json()));

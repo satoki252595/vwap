@@ -1,0 +1,45 @@
+name: daily-ingest
+
+# 平日 取引終了後（UTC07:00 = JST16:00）に 日足更新＋5分足蓄積＋剪定。
+on:
+  schedule:
+    - cron: "0 7 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      codes:
+        description: "対象銘柄(カンマ区切り・空=全銘柄)"
+        default: ""
+      limit:
+        description: "先頭N銘柄に制限(0=無制限)"
+        default: "0"
+
+concurrency:
+  group: daily-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: vwap-data
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install --no-audit --no-fund
+      - name: build args
+        id: a
+        run: |
+          ARGS=""
+          [ -n "${{ github.event.inputs.codes }}" ] && ARGS="$ARGS --codes=${{ github.event.inputs.codes }}"
+          [ -n "${{ github.event.inputs.limit }}" ] && [ "${{ github.event.inputs.limit }}" != "0" ] && ARGS="$ARGS --limit=${{ github.event.inputs.limit }}"
+          echo "args=$ARGS" >> "$GITHUB_OUTPUT"
+      - name: 日足更新（未取得は10年バックフィル）
+        run: npx tsx scripts/ingest-daily.ts ${{ steps.a.outputs.args }}
+      - name: 5分足蓄積（直近5日→マージ＋保持期間剪定→R2）
+        run: npx tsx scripts/ingest-intra.ts ${{ steps.a.outputs.args }}

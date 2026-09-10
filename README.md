@@ -1,5 +1,16 @@
 # 日本株ボード（VWAP / 価格別出来高 / 日足10年 / 信用残高）
 
+> **【アーカイブ】2026-09-11**
+> 本リポジトリは R2 バケット `vwap-data` を作成した初代実装だが、機能は
+> kabulab-cf（`satoki252595/kabulab_tool_cloudflare`）の `/vwap-analysis` サービスへ
+> 吸収済み。Worker `vwap.satoki252595.workers.dev` は未デプロイ（404）。
+>
+> R2 への取込スクリプトと workflow は、kabulab-cf の `vwap-ingest.yml` と
+> **同一の R2 キーへ二重書込する事故を防ぐため** `archive/superseded-ingest/` へ
+> 退避した（[経緯](archive/superseded-ingest/README.md)）。元に戻さないこと。
+>
+> 以下は初代実装当時の記述であり、現行の運用を表さない。
+
 東証**全上場銘柄（約4,400）**を、4桁/英数字コードまたは銘柄名で検索し、3つのビューで表示する
 **Cloudflare Worker + R2** アプリ。**ランニングコスト 0 円**。
 

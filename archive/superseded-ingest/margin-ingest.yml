@@ -1,0 +1,29 @@
+name: margin-ingest
+
+# 火曜（UTC08:00 = JST17:00）に JPX 週次信用残高PDFを解析→R2。
+on:
+  schedule:
+    - cron: "0 8 * * 2"
+  workflow_dispatch: {}
+
+concurrency:
+  group: margin-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: vwap-data
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install --no-audit --no-fund
+      - name: 信用残高PDF取込
+        run: npx tsx scripts/ingest-margin.ts
